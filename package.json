@@ -37,6 +37,8 @@
     "dist:win": "node scripts/build-with-builder.js auto --win",
     "predist:linux": "bun run verify:modelsdev-snapshot && bun run build:skill-pack",
     "dist:linux": "node scripts/build-with-builder.js auto --linux",
+    "seal:refresh": "node scripts/sealed-build.js --refresh-only",
+    "sealed": "node scripts/sealed-build.js",
     "dist:preview:mac": "cross-env WAYLAND_RELEASE_TRACK=preview node scripts/build-with-builder.js auto --mac",
     "dist:preview:win": "cross-env WAYLAND_RELEASE_TRACK=preview node scripts/build-with-builder.js auto --win",
     "dist:preview:linux": "cross-env WAYLAND_RELEASE_TRACK=preview node scripts/build-with-builder.js auto --linux",

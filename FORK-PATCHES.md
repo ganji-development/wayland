@@ -177,6 +177,35 @@ Rejected alternative: `PUPPETEER_SKIP_DOWNLOAD` plus the system Chrome. The brid
 from install time to runtime, and `whatsapp-web.js` is sensitive to Chrome version — a
 system Chrome auto-updates out from under it, while puppeteer's pinned build does not.
 
+## 6. `sealed-build.js` — one command for a packaged build
+
+**Files:** `scripts/sealed-build.js`, `package.json` (`seal:refresh`, `sealed` scripts)
+
+Convenience, not a defect fix. A packaged build needs three things in a fixed order, and every
+way of getting it wrong reports a symptom instead of the fix:
+
+| error | actual cause |
+|---|---|
+| `Capability acceptance output directory already exists.` | the generator writes exclusively; you did not clear it |
+| `...manifest belongs to a stale or foreign candidate.` | you committed since generating; receipts bind commit **and** tree |
+| `WAYLAND_CAPABILITY_RECEIPTS_DIR is required...` | new shell, the variable was never exported |
+
+The variable is the part a shell cannot fix — exporting it in one terminal does nothing for the
+next. So the script sets it on the **child** process:
+
+```powershell
+bun run sealed dist:win     # clear, regenerate, build - from a cold shell
+bun run seal:refresh        # receipts only
+```
+
+It also fails fast and names the files when the tree is dirty, rather than letting the generator
+fail deep inside with `capability evidence cannot bind mutable source`.
+
+Targets are an allowlist (`dist`, `dist:win`, `dist:mac`, `dist:linux`, `package`, `make`), not a
+passthrough, because the value reaches a child process launcher.
+
+Note it shells out to `bun run <target>`, so the `predist:*` hooks still run.
+
 ---
 
 ## Repo state, not a commit
