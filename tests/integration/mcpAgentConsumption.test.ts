@@ -22,7 +22,13 @@ describe('MCP agent-consumption seam', () => {
 
   afterEach(async () => {
     await connection?.disconnect().catch(() => undefined);
-    if (workspace) await rm(workspace, { recursive: true, force: true });
+    // Windows: the agent spawns the MCP server as a GRANDCHILD which inherits
+    // `workspace` as its cwd, and an open cwd locks a directory. disconnect()
+    // does tree-kill it (`taskkill /T /F`) and verifies the parent is gone, but
+    // the kernel releases the descendant's handle a moment later, so an rmdir
+    // issued immediately after can still land on EBUSY. These retry options are
+    // Node's own answer to that race - no-ops on POSIX, where nothing locks.
+    if (workspace) await rm(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   it('hands the selected MCP declaration to the ACP agent, which can list and call its tool', async () => {
