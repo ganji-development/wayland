@@ -21,6 +21,7 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { load as loadYaml } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 
 type PackageManifest = {
@@ -123,6 +124,37 @@ describe('fork patch: better-sqlite3 does not run its own native build', () => {
     expect(trusted, 'better-sqlite3 was re-added - see FORK-PATCHES.md').not.toContain('better-sqlite3');
     // electron's own install script is what downloads the runtime, so it must stay.
     expect(trusted).toContain('electron');
+  });
+});
+
+describe('fork patch: Windows code signing stays disabled', () => {
+  // Upstream signs Windows artifacts through Azure Trusted Signing against the
+  // Ferrox Labs account, authenticating from AZURE_TENANT_ID / AZURE_CLIENT_ID /
+  // AZURE_CLIENT_SECRET - CI secrets injected only for the CI Windows build. A
+  // fork has neither those credentials nor any business signing as Ferrox Labs,
+  // so the step can only fail, or stall installing the TrustedSigning PowerShell
+  // module, after the build has already done all its expensive work.
+  //
+  // This is the one patch expressed as a DELETION, which makes it the easiest to
+  // lose: a merge that restores the key reads as upstream simply winning, and
+  // nothing else would notice until the next packaged build dies at the signing
+  // step.
+  const builderConfig = loadYaml(readFileSync(resolve(process.cwd(), 'electron-builder.yml'), 'utf8')) as {
+    win?: { azureSignOptions?: unknown; verifyUpdateCodeSignature?: boolean };
+  };
+
+  it('declares no azureSignOptions', () => {
+    expect(builderConfig.win, 'electron-builder.yml lost its win section entirely').toBeDefined();
+    expect(
+      builderConfig.win?.azureSignOptions,
+      'azureSignOptions was reinstated - see FORK-PATCHES.md patch 8'
+    ).toBeUndefined();
+  });
+
+  it('does not require an Authenticode signature for updates', () => {
+    // Left true, the Windows auto-updater rejects this build's own unsigned
+    // binary on every update check.
+    expect(builderConfig.win?.verifyUpdateCodeSignature).toBe(false);
   });
 });
 

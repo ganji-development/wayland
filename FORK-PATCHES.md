@@ -264,6 +264,30 @@ passthrough, because the value reaches a child process launcher.
 
 Note it shells out to `bun run <target>`, so the `predist:*` hooks still run.
 
+## 8. Windows code signing removed
+
+**Files:** `electron-builder.yml` (`win.azureSignOptions`, `win.verifyUpdateCodeSignature`)
+**Guard:** `forkPatchGuards.test.ts`
+
+Upstream signs Windows artifacts through Azure Trusted Signing against the Ferrox Labs account,
+authenticating via the Azure EnvironmentCredential from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
+`AZURE_CLIENT_SECRET` — CI secrets injected only for the CI Windows build.
+
+A fork build has neither the credentials nor any business signing as Ferrox Labs, so the step can
+only fail, or stall while electron-builder installs the TrustedSigning PowerShell module. It also
+fails **late**: signing runs after packaging, so the whole build is wasted first.
+
+`verifyUpdateCodeSignature` is set to `false` rather than removed. Left `true`, the Windows
+auto-updater rejects this build's own unsigned Authenticode on every update check. Explicit
+`false` also gives the guard something positive to assert instead of an absence.
+
+**Cost:** SmartScreen warns on first run of the unsigned installer. Irrelevant for a build you
+run yourself; it would matter the moment you handed the installer to someone else.
+
+**This is the only patch expressed as a deletion, which makes it the easiest to lose.** A merge
+that reinstates `azureSignOptions` reads as upstream simply winning, and nothing else would
+notice until the next packaged build died at the signing step.
+
 ---
 
 ## Repo state, not a commit
