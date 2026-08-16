@@ -251,6 +251,7 @@ src/process/channels/signal-cli-runtime/bin/
 # IJFW / tooling scratch dirs (local memory, sessions, wiki; never tracked)
 .wayland-core/
 /ijfw/
+.ijfw/
 
 # Editor / agent tooling configs (machine-local, never shared)
 .cursor/
