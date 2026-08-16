@@ -184,6 +184,85 @@ function installBridgeDeps() {
   }
 }
 
+/**
+ * Relative path, inside node_modules/electron/dist, of the binary each platform
+ * expects. Used only when electron's own `path.txt` is absent.
+ */
+const ELECTRON_BINARY_BY_PLATFORM = {
+  win32: 'electron.exe',
+  darwin: path.join('Electron.app', 'Contents', 'MacOS', 'Electron'),
+  linux: 'electron',
+};
+
+/**
+ * Fail loudly when electron's postinstall produced no runnable binary.
+ *
+ * electron's installer downloads its platform zip and hands it to
+ * `extract-zip` -> `yauzl`. yauzl 2.x's INFLATING read stream stalls partway
+ * through the first entry on newer Node runtimes: no error, no rejection, the
+ * promise simply never settles, the event loop drains and node exits **0**.
+ * The install therefore "succeeds" while leaving a `dist/` holding one partial
+ * file and no executable, and the failure only surfaces much later as
+ * electron-vite's opaque `Error: Electron uninstall` at `bun run start`.
+ *
+ * The root cause is pinned in package.json (`yauzl` is overridden to ^3.4.0,
+ * which streams correctly). This check is the backstop: it turns any future
+ * recurrence - a new Node break, a lost override, a half-extracted cache - into
+ * an immediate, named error instead of an hour of misdirected debugging.
+ *
+ * Honours ELECTRON_SKIP_BINARY_DOWNLOAD for installs that deliberately ship no
+ * binary, and WAYLAND_SKIP_ELECTRON_CHECK as a manual escape hatch.
+ */
+function verifyElectronBinary(electronRoot = path.join(__dirname, '..', 'node_modules', 'electron')) {
+  if (process.env.ELECTRON_SKIP_BINARY_DOWNLOAD || process.env.WAYLAND_SKIP_ELECTRON_CHECK) {
+    console.log('[postinstall] Electron binary check skipped (explicitly disabled via env)');
+    return true;
+  }
+  // No electron package at all is not this check's business.
+  if (!fs.existsSync(electronRoot)) return true;
+
+  const pathTxt = path.join(electronRoot, 'path.txt');
+  const relative = fs.existsSync(pathTxt)
+    ? fs.readFileSync(pathTxt, 'utf8').trim()
+    : ELECTRON_BINARY_BY_PLATFORM[process.platform];
+
+  // An unknown platform has no expected layout to assert against.
+  if (!relative) return true;
+
+  const binary = path.join(electronRoot, 'dist', relative);
+  if (fs.existsSync(binary)) return true;
+
+  const distDir = path.join(electronRoot, 'dist');
+  const extracted = fs.existsSync(distDir) ? fs.readdirSync(distDir).length : 0;
+  console.error(
+    [
+      '',
+      '='.repeat(72),
+      '[postinstall] FATAL: Electron installed no runnable binary.',
+      '='.repeat(72),
+      `  expected: ${binary}`,
+      `  dist/ currently holds ${extracted} entr${extracted === 1 ? 'y' : 'ies'}`,
+      '',
+      "  electron's own postinstall exits 0 even when its zip extraction stalls,",
+      '  so this would otherwise surface later as the misleading',
+      '  "Error: Electron uninstall" from `bun run start`.',
+      '',
+      '  Most likely causes:',
+      `    - Node ${process.version} is outside this project's supported range`,
+      '      (package.json engines). yauzl 2.x cannot inflate on newer runtimes.',
+      '    - the `yauzl` override in package.json was dropped or not applied.',
+      '',
+      '  To retry the download and extraction:',
+      '    node node_modules/electron/install.js',
+      '',
+      '  Set WAYLAND_SKIP_ELECTRON_CHECK=1 to bypass this check deliberately.',
+      '='.repeat(72),
+      '',
+    ].join('\n')
+  );
+  return false;
+}
+
 function runPostInstall() {
   // Bun can retain removed packages during an in-place upgrade. Prune the
   // fixed obsolete-runtime denylist before inspecting or packaging node_modules.
@@ -221,13 +300,21 @@ function runPostInstall() {
     console.error('Postinstall failed:', e.message);
     // Don't exit with error code to avoid breaking installation
   }
+
+  // Last: assert the install actually produced a runnable Electron. Unlike the
+  // failures above, this one is not survivable - nothing in the app can start
+  // without the binary - so it is the single case where postinstall exits
+  // non-zero rather than leaving a broken tree that looks installed.
+  return verifyElectronBinary();
 }
 
 // Only run if this script is executed directly
 if (require.main === module) {
-  runPostInstall();
+  if (!runPostInstall()) process.exitCode = 1;
 }
 
 module.exports = runPostInstall;
 module.exports.OBSOLETE_RUNTIME_PACKAGES = OBSOLETE_RUNTIME_PACKAGES;
 module.exports.pruneObsoleteRuntimePackages = pruneObsoleteRuntimePackages;
+module.exports.verifyElectronBinary = verifyElectronBinary;
+module.exports.ELECTRON_BINARY_BY_PLATFORM = ELECTRON_BINARY_BY_PLATFORM;
