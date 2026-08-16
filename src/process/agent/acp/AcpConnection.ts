@@ -329,7 +329,16 @@ export class AcpConnection {
       // Provide a friendlier message when the CLI binary is not found (ENOENT)
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         const cliHint = this.backend ?? backend;
-        spawnError = new Error(`'${cliHint}' CLI not found. Please install it or update the CLI path in Settings.`);
+        // Name the executable that was actually attempted. ENOENT means the OS
+        // could not find THIS path - which is often not a missing CLI at all but
+        // a mis-parsed command string, and the bare "install it" wording sent
+        // people off installing a CLI that was already on their machine. The
+        // "'<backend>' CLI not found" prefix is load-bearing: classifyReconnectError
+        // and buildStartupErrorMessage both pattern-match on it.
+        spawnError = new Error(
+          `'${cliHint}' CLI not found: no executable at ${JSON.stringify(child.spawnfile)}. ` +
+            `Please install it or update the CLI path in Settings.`
+        );
       } else {
         spawnError = error;
       }

@@ -49,6 +49,15 @@ function normalizeWindowsCommand(command: string): string {
   return trimmed;
 }
 
+/** True when `candidate` names an existing regular file on disk. */
+function isExistingFile(candidate: string): boolean {
+  try {
+    return statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Split a Windows cliPath into the executable and its inline arguments for a
  * direct (shell: false) spawn.
@@ -56,6 +65,8 @@ function normalizeWindowsCommand(command: string): string {
  * Supports:
  *   - `"C:\Program Files\agent.exe"` → quoted path with spaces, optionally
  *     followed by unquoted args (`"C:\..\agent.exe" --flag`).
+ *   - `C:\Program Files\nodejs\node.exe` → UNQUOTED absolute path with spaces,
+ *     resolved against the filesystem, optionally followed by args.
  *   - `goose acp`            → command + inline args.
  *   - `node path/to/file.js` → command + inline args.
  *
@@ -86,7 +97,36 @@ export function parseWindowsCliPath(cliPath: string): { command: string; inlineA
     }
   }
 
-  // Unquoted: first whitespace-delimited token is the command, the rest args.
+  // An UNQUOTED absolute path may itself contain spaces, which makes a naive
+  // whitespace split ambiguous: `C:\Program Files\nodejs\node.exe` is ONE
+  // executable, while `goose acp` is a command plus an argument, and nothing in
+  // the string distinguishes them. Splitting blindly turned the former into
+  // command `C:\Program` with a stray arg, so the spawn failed ENOENT and the
+  // caller reported a missing CLI that was in fact installed - the default
+  // Windows install location for almost everything contains a space.
+  //
+  // Resolve it the way Windows CreateProcess resolves a bare command line: try
+  // the longest leading prefix that actually exists on disk, then shorten. The
+  // probe is gated on `path.isAbsolute`, so a relative command (`goose acp`,
+  // `node path/to/file.js`) keeps its historical command+args split and costs no
+  // filesystem lookup. Prefixes are cut from the original string rather than
+  // rejoined from tokens, so a path containing runs of whitespace survives.
+  if (path.isAbsolute(trimmed)) {
+    const boundaries = [trimmed.length];
+    const whitespace = /\s+/g;
+    let match: RegExpExecArray | null;
+    while ((match = whitespace.exec(trimmed)) !== null) boundaries.push(match.index);
+
+    for (const end of boundaries.toSorted((left, right) => right - left)) {
+      const candidate = trimmed.slice(0, end);
+      if (!candidate || !isExistingFile(candidate)) continue;
+      const remainder = trimmed.slice(end).trim();
+      return { command: candidate, inlineArgs: remainder ? remainder.split(/\s+/).filter(Boolean) : [] };
+    }
+  }
+
+  // Unquoted and not a resolvable absolute path: first whitespace-delimited
+  // token is the command, the rest args.
   const parts = trimmed.split(/\s+/).filter(Boolean);
   return { command: parts[0] ?? '', inlineArgs: parts.slice(1) };
 }

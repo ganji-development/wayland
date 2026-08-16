@@ -70,6 +70,10 @@ describe('MCP agent-consumption seam', () => {
       'published_unverified'
     );
 
+    // Deliberately UNQUOTED. On a stock Windows install this is
+    // `C:\Program Files\nodejs\node.exe`, so this call is the regression guard for
+    // an absolute executable path containing spaces reaching the spawn layer as a
+    // bare command string - exactly what a user's configured cliPath looks like.
     await connection.connect('custom', process.execPath, workspace, [agentScript]);
     await connection.newSession(workspace, {
       mcpServers: sessionServers,

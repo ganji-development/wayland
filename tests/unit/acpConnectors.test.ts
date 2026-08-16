@@ -10,16 +10,33 @@
 
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-const { fsPromisesMock } = vi.hoisted(() => ({
+const { fsPromisesMock, existingFiles } = vi.hoisted(() => ({
   fsPromisesMock: {
     access: vi.fn(),
     readdir: vi.fn(),
     stat: vi.fn(),
   },
+  /**
+   * Paths parseWindowsCliPath should consider present on disk. It resolves an
+   * unquoted spaced executable by probing the filesystem, so the probe needs a
+   * deterministic answer rather than whatever exists on the test machine.
+   */
+  existingFiles: new Set<string>(),
 }));
 
+// `readdirSync` is deliberately left undefined, exactly as before: the bunx
+// cleanup helper calls it inside a try/catch and relies on the throw to skip a
+// root, so defining it would quietly change what those tests exercise.
 vi.mock('fs', () => ({
   promises: fsPromisesMock,
+  statSync: vi.fn((target: string) => {
+    if (!existingFiles.has(target)) {
+      const error: NodeJS.ErrnoException = new Error(`ENOENT: no such file, stat '${target}'`);
+      error.code = 'ENOENT';
+      throw error;
+    }
+    return { isFile: () => true };
+  }),
 }));
 
 vi.mock('child_process', () => ({
@@ -88,6 +105,71 @@ const mockExecFile = vi.mocked(execFileCb);
 const mockExecFileSync = vi.mocked(execFileSync);
 const mockFsPromises = vi.mocked(fsPromisesMock);
 const mockSpawn = vi.mocked(spawn);
+
+describe('parseWindowsCliPath - unquoted executable path containing spaces', () => {
+  const NODE_EXE = 'C:\\Program Files\\nodejs\\node.exe';
+
+  beforeEach(() => {
+    existingFiles.clear();
+  });
+
+  afterEach(() => {
+    existingFiles.clear();
+  });
+
+  it('keeps an unquoted absolute path with spaces as one command', () => {
+    // The default install location of almost everything on Windows contains a
+    // space. Splitting on whitespace produced command `C:\Program`, the spawn
+    // failed ENOENT, and the caller reported a CLI that was in fact installed.
+    existingFiles.add(NODE_EXE);
+
+    expect(parseWindowsCliPath(NODE_EXE)).toEqual({ command: NODE_EXE, inlineArgs: [] });
+  });
+
+  it('separates trailing args from an unquoted spaced path', () => {
+    existingFiles.add(NODE_EXE);
+
+    expect(parseWindowsCliPath(`${NODE_EXE} --experimental-acp server.js`)).toEqual({
+      command: NODE_EXE,
+      inlineArgs: ['--experimental-acp', 'server.js'],
+    });
+  });
+
+  it('prefers the longest path that exists when a prefix also resolves', () => {
+    // `C:\Tools\bin` exists as a file AND `C:\Tools\bin dir\agent.exe` exists.
+    // Longest-first probing must not stop at the shorter accidental match.
+    existingFiles.add('C:\\Tools\\bin');
+    existingFiles.add('C:\\Tools\\bin dir\\agent.exe');
+
+    expect(parseWindowsCliPath('C:\\Tools\\bin dir\\agent.exe --acp')).toEqual({
+      command: 'C:\\Tools\\bin dir\\agent.exe',
+      inlineArgs: ['--acp'],
+    });
+  });
+
+  it('leaves a relative command + args split untouched and never probes for it', () => {
+    // `goose acp` is a command plus an argument, not a path. Nothing is on disk,
+    // so a probe here could only produce a wrong answer.
+    expect(parseWindowsCliPath('goose acp')).toEqual({ command: 'goose', inlineArgs: ['acp'] });
+    expect(parseWindowsCliPath('node path/to/file.js')).toEqual({
+      command: 'node',
+      inlineArgs: ['path/to/file.js'],
+    });
+  });
+
+  it('still honours an explicitly quoted path without consulting the filesystem', () => {
+    expect(parseWindowsCliPath(`"${NODE_EXE}" --acp`)).toEqual({ command: NODE_EXE, inlineArgs: ['--acp'] });
+  });
+
+  it('falls back to the whitespace split when no prefix exists on disk', () => {
+    // A typo'd or not-yet-installed path cannot be disambiguated; preserve the
+    // historical shape so the spawn still fails with a real ENOENT.
+    expect(parseWindowsCliPath('C:\\Nope Here\\agent.exe --acp')).toEqual({
+      command: 'C:\\Nope',
+      inlineArgs: ['Here\\agent.exe', '--acp'],
+    });
+  });
+});
 
 describe('spawnNpxBackend - Windows UTF-8 fix', () => {
   const mockChild = { unref: vi.fn() };
