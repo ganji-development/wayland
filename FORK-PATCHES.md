@@ -177,7 +177,47 @@ Rejected alternative: `PUPPETEER_SKIP_DOWNLOAD` plus the system Chrome. The brid
 from install time to runtime, and `whatsapp-web.js` is sensitive to Chrome version — a
 system Chrome auto-updates out from under it, while puppeteer's pinned build does not.
 
-## 6. `sealed-build.js` — one command for a packaged build
+## 6. better-sqlite3 removed from `trustedDependencies`
+
+**Files:** `package.json` (`trustedDependencies`)
+**Guard:** `forkPatchGuards.test.ts`
+
+On a clean clone under a Node with no published better-sqlite3 prebuilt, bun runs the package's
+install script, `prebuild-install` finds nothing, and it falls back to node-gyp:
+
+```
+prebuild-install warn install No prebuilt binaries found (target=26.7.0 runtime=node arch=x64 platform=win32)
+cl : command line warning D9002: ignoring unknown option '-flto=thin'
+LINK : fatal error LNK1117: syntax error in option 'opt:lldltojobs=2'
+```
+
+`-flto=thin` and `opt:lldltojobs=2` are Clang/lld flags reaching MSVC. They come from **Node's
+own `common.gypi`** — official Node Windows builds are compiled with ClangCL/LTO, and node-gyp
+inherits those flags into every addon it builds. Nothing in this repo can fix that, and it aborts
+`bun install` before postinstall runs.
+
+**The build is also unnecessary.** The app runs under Electron, and
+`electron-builder install-app-deps` fetches the Electron-ABI prebuilt during postinstall. On a
+working machine that is the *only* better-sqlite3 binary present:
+
+```
+%APPDATA%\npm-cache\_prebuilds\0fd89e-better-sqlite3-v12.8.0-electron-v145-win32-x64.tar.gz
+```
+
+No Node-ABI binding exists there, and the full suite passes anyway. So the Node-ABI build was
+never load-bearing — only the failure was.
+
+Leaving the package untrusted makes bun skip its install script, so that path is never taken.
+`electron` **stays** trusted: its install script is what downloads the runtime.
+
+Upstream lists `better-sqlite3` here, so a merge will try to reinstate it. If the guard test goes
+red after a merge, that is what happened.
+
+Related: this repo declares `"node": ">=22 <25"` in `engines`, and both dev machines run 26.x.
+That mismatch is the common root of this and patch 1. Staying inside the declared range avoids
+both; this patch means you no longer have to.
+
+## 7. `sealed-build.js` — one command for a packaged build
 
 **Files:** `scripts/sealed-build.js`, `package.json` (`seal:refresh`, `sealed` scripts)
 

@@ -26,6 +26,7 @@ import { describe, expect, it } from 'vitest';
 type PackageManifest = {
   overrides?: Record<string, string>;
   resolutions?: Record<string, string>;
+  trustedDependencies?: string[];
 };
 
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as PackageManifest;
@@ -88,6 +89,34 @@ describe('fork patch: yauzl is pinned above the version that cannot inflate', ()
 
     expect(range, 'the whatsapp-bridge yauzl pin was dropped - see FORK-PATCHES.md').toBeTruthy();
     expect(lowestMajor(range as string), `yauzl range "${range}" allows a 2.x resolution`).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('fork patch: better-sqlite3 does not run its own native build', () => {
+  // better-sqlite3 publishes no prebuilt for newer Node ABIs, so its install
+  // script falls back to node-gyp - which on Windows inherits `-flto=thin` and
+  // `opt:lldltojobs=2` from Node's own common.gypi (official Windows builds use
+  // ClangCL/LTO) and hands them to MSVC, which cannot parse them:
+  //
+  //   LINK : fatal error LNK1117: syntax error in option 'opt:lldltojobs=2'
+  //
+  // That aborts `bun install` outright, before postinstall ever runs. Nothing in
+  // this repo can fix those flags; they come from Node.
+  //
+  // The build is also unnecessary. This app runs under Electron, and
+  // `electron-builder install-app-deps` fetches the ELECTRON-ABI prebuilt during
+  // postinstall - which is the only better-sqlite3 binary present on a working
+  // machine, test suite included. Leaving the package untrusted means bun skips
+  // its install script and that path is never taken.
+  //
+  // Upstream lists better-sqlite3 here, so a merge will try to reinstate it.
+  it('omits better-sqlite3 while keeping electron trusted', () => {
+    const trusted = manifest.trustedDependencies;
+
+    expect(trusted, 'trustedDependencies disappeared entirely').toBeDefined();
+    expect(trusted, 'better-sqlite3 was re-added - see FORK-PATCHES.md').not.toContain('better-sqlite3');
+    // electron's own install script is what downloads the runtime, so it must stay.
+    expect(trusted).toContain('electron');
   });
 });
 

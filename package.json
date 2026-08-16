@@ -402,7 +402,6 @@
   },
   "productName": "Wayland",
   "trustedDependencies": [
-    "better-sqlite3",
     "electron"
   ]
 }
