@@ -163,7 +163,11 @@ describe('Desktop recovery mutation epoch', () => {
     value.userDataRoot = userDataRoot;
 
     await expect(fingerprintDesktopRecoveryState(value)).rejects.toThrow('bounded content inventory');
-  }, 30_000);
+    // Budget covers the SETUP, not the assertion: laying down 20,001 files costs
+    // ~12s on NTFS (antivirus scans each create) against ~1s on ext4/APFS, so the
+    // original 30s left no headroom on Windows and the test timed out before it
+    // ever reached the bound it exists to prove.
+  }, 60_000);
 });
 
 describe('Desktop-only production capture boundary', () => {

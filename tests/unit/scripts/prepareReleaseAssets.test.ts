@@ -35,8 +35,44 @@ function fixture(omitted?: string) {
   return { input, output };
 }
 
+/**
+ * Locate a usable `bash`.
+ *
+ * A stock Windows PowerShell session has no `bash` on PATH even when Git for
+ * Windows is installed, so `spawnSync('bash', …)` fails ENOENT and reports
+ * `status: null`. That surfaces as "expected null to be 0" - a missing
+ * interpreter wearing the costume of a failed assertion. Probe PATH first, then
+ * the Git for Windows install locations, and cache the winner.
+ */
+let cachedBash: string | null | undefined;
+function resolveBash(): string | null {
+  if (cachedBash !== undefined) return cachedBash;
+
+  const candidates = ['bash'];
+  if (process.platform === 'win32') {
+    const roots = [process.env.ProgramW6432, process.env.ProgramFiles, 'C:\\Program Files'];
+    for (const root of roots) {
+      if (root) candidates.push(path.join(root, 'Git', 'bin', 'bash.exe'));
+    }
+  }
+
+  for (const candidate of candidates) {
+    const probe = spawnSync(candidate, ['-c', 'exit 0']);
+    if (!probe.error && probe.status === 0) {
+      cachedBash = candidate;
+      return cachedBash;
+    }
+  }
+  cachedBash = null;
+  return cachedBash;
+}
+
 function prepare(input: string, output: string) {
-  return spawnSync('bash', ['scripts/prepare-release-assets.sh', input, output], {
+  const bash = resolveBash();
+  // Say so plainly rather than letting a null exit status masquerade as a
+  // release-script defect.
+  if (!bash) throw new Error('No usable `bash` found; install Git for Windows or put bash on PATH.');
+  return spawnSync(bash, ['scripts/prepare-release-assets.sh', input, output], {
     cwd: process.cwd(),
     encoding: 'utf8',
   });
