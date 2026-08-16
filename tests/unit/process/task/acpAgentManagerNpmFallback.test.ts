@@ -28,6 +28,25 @@ const { mockGet, mockIsCliAvailable } = vi.hoisted(() => ({
 vi.mock('@process/agent/acp/AcpDetector', () => ({
   acpDetector: { isCliAvailable: mockIsCliAvailable },
 }));
+/**
+ * Pin the bundled-binary lookup OFF.
+ *
+ * resolveWNanoBinary probes userData override -> resources/bundled-wayland-nano
+ * -> dev resources, and AcpAgentManager consults it BEFORE cliCommand or
+ * defaultCliPath. Unmocked, that reads the real filesystem: on a machine that has
+ * ever run a packaged build, `resources/bundled-wayland-nano/<platform>/` holds a
+ * real binary, so every case below resolved to that absolute path instead of the
+ * PATH command or the npm fallback - and the suite passed or failed depending on
+ * whether the developer had packaged locally.
+ *
+ * The ordering under test here is PATH vs npm. The bundled tier is a different
+ * question with its own coverage, so it is held at "absent" to keep these
+ * deterministic.
+ */
+vi.mock('@process/agent/wnano/binaryResolver', () => ({
+  resolveWNanoBinary: vi.fn(() => null),
+  isWNanoAvailable: vi.fn(() => false),
+}));
 vi.mock('@process/services/cron/CronBusyGuard', () => ({
   cronBusyGuard: { setProcessing: vi.fn(), isProcessing: vi.fn(() => false) },
 }));
