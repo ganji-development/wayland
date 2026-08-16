@@ -92,7 +92,9 @@ describe('collectManagedWorkspaceInventory', () => {
 
   it('accepts provenance only when installation, root, path, device, and inode all match', async () => {
     const candidate = await makeCandidate();
-    const stat = await fs.lstat(candidate);
+    // Provenance identity is canonical decimal strings from bigint stats: an
+    // NTFS file ID exceeds Number.MAX_SAFE_INTEGER, so a number cannot carry it.
+    const stat = await fs.lstat(candidate, { bigint: true });
     const canonicalRoot = await fs.realpath(root);
     const canonicalPath = await fs.realpath(candidate);
     const report = await collect([], {
@@ -104,8 +106,8 @@ describe('collectManagedWorkspaceInventory', () => {
           installationId: INSTALLATION_ID,
           canonicalRoot,
           canonicalPath,
-          device: stat.dev,
-          inode: stat.ino,
+          device: stat.dev.toString(),
+          inode: stat.ino.toString(),
           createdAtMs: NOW - 31 * DAY,
         },
       ],
