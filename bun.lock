@@ -213,7 +213,6 @@
   },
   "trustedDependencies": [
     "electron",
-    "better-sqlite3",
   ],
   "patchedDependencies": {
     "@office-ai/aioncli-core@0.30.6": "patches/@office-ai%2Faioncli-core@0.30.6.patch",
