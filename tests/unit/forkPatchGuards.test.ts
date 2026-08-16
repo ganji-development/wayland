@@ -60,6 +60,12 @@ describe('fork patch: yauzl is pinned above the version that cannot inflate', ()
   // loop drains and node exits 0. The install "succeeds" leaving a dist/ with no
   // executable, surfacing much later as electron-vite's `Error: Electron uninstall`.
   //
+  // Electron was the symptom that led here but is NO LONGER a consumer:
+  // electron@41.10.5 vendors @electron-internal/extract-zip, which declares no
+  // dependencies. The live consumers are @joshua.litt/get-ripgrep in this tree
+  // and the whatsapp-bridge in its own (asserted separately below), so an
+  // Electron install succeeding proves nothing about this pin.
+  //
   // Our fix is two lines in package.json. They sit LAST in each block, right
   // against the closing brace, in a file upstream rewrites on every dependency
   // bump - so they are the single most likely thing to be lost to a merge, and

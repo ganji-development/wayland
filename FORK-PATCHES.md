@@ -49,10 +49,28 @@ Measured on `electron-v41.6.0-win32-x64.zip` under Node 26:
 | yauzl **inflating** stream | 633,056 bytes, `end` never fires |
 | yauzl 3.4.0, same zip | all 75 entries, 1.4s |
 
+### Who actually depends on this now
+
+**Electron no longer does.** It was the symptom that led here, but `electron@41.10.5` (upstream
+PR #976) switched from public `extract-zip` to `@electron-internal/extract-zip@1.0.5`, which
+declares **no dependencies** and vendors its own extractor. So from 41.10.5 onward the override
+does not affect Electron at all, and an Electron install succeeding is **not** evidence this pin
+works. Electron 41.6.0 and earlier did use the broken path.
+
+The pin is still load-bearing for two live consumers:
+
+| consumer | route |
+|---|---|
+| `@joshua.litt/get-ripgrep@0.0.3` (root tree) | `extract-zip@2.0.1` → `yauzl` — downloads and extracts ripgrep |
+| whatsapp-bridge (separate tree) | see patch 5 — its own pin, its own lockfile |
+
+Do not drop this on the grounds that "Electron doesn't need it anymore." Check the table.
+
 **Highest merge risk of anything here.** Upstream rewrites `package.json` on every dependency
 bump, and both our lines sit *last* in their blocks against the closing brace, so any new entry
 sorting after `ws` collides. **Nothing but the guard test detects the loss** — the suite stays
-fully green and you find out on some future Electron bump.
+fully green, and the failure surfaces later as a stalled download in whatever consumer still
+routes through public `extract-zip`.
 
 `bun.lock` conflicts are noise; it is derived. Take either side and re-run `bun install`.
 
