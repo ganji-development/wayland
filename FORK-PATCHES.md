@@ -264,7 +264,48 @@ passthrough, because the value reaches a child process launcher.
 
 Note it shells out to `bun run <target>`, so the `predist:*` hooks still run.
 
-## 8. Windows code signing removed
+## 8. Managed-workspace provenance stores filesystem identity as strings
+
+**Files:** `src/process/services/managedWorkspaceProvenance.ts`,
+`src/process/services/managedWorkspaceInventory.ts`, `src/process/utils/initAgent.ts`
+**Guard:** `tests/unit/managedWorkspaceProvenance.test.ts` (parse-boundary cases)
+
+A real upstream defect, not an environment quirk. NTFS issues 64-bit file IDs that exceed
+JavaScript's safe-integer range:
+
+```
+inode observed   10414574139085076
+MAX_SAFE_INTEGER  9007199254740991
+```
+
+`device` and `inode` were typed `number` and validated with `Number.isSafeInteger`, so on such a
+volume a record was **written successfully and then rejected by its own parser on the next load**
+with `MANAGED_WORKSPACE_PROVENANCE_INVALID_RECORD`. Managed-workspace provenance silently became
+unavailable, and above the ceiling the value is lossy anyway, so the exact identity comparison it
+exists for was not meaningful.
+
+Now collected from `{ bigint: true }` stats and stored as canonical decimal strings, matching how
+the rest of this codebase already records filesystem identity — `constitutionFsTransaction`,
+`classicRecoveryLocator` and `classicConstitutionPromotion` all use `stat.dev.toString(10)` with
+`/^\d+$/` validation. This module was the outlier.
+
+Three call sites move together, and a merge that reverts any one of them silently breaks the
+others, because a string never equals a number:
+
+| file | change |
+|---|---|
+| `managedWorkspaceProvenance.ts` | types, `parseRecord`, and the record/compare path |
+| `managedWorkspaceInventory.ts` | separate bigint `lstat` for the provenance match; the numeric stat stays for timestamp arithmetic |
+| `initAgent.ts` | `createExclusiveManagedWorkspace` emits string identity |
+
+**Legacy ledgers still load.** A JSON number is accepted and normalized to a string when it is a
+safe integer; a larger one is refused, because it already lost precision on write and no longer
+identifies the object it names. Ledger filename and `schemaVersion` are unchanged, so nothing is
+orphaned.
+
+Reported originally in `docs/windows-test-and-provenance-issues.md` §2, which is now fixed.
+
+## 9. Windows code signing removed
 
 **Files:** `electron-builder.yml` (`win.azureSignOptions`, `win.verifyUpdateCodeSignature`)
 **Guard:** `forkPatchGuards.test.ts`

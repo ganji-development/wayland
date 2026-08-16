@@ -302,6 +302,13 @@ export async function collectManagedWorkspaceInventory(
         const candidateStat = await fs.lstat(candidatePath);
         if (candidateStat.isSymbolicLink()) throw new Error('candidate is a symbolic link');
         if (!candidateStat.isDirectory()) throw new Error('candidate is not a directory');
+        // Exact identity for the provenance match below. `candidateStat` keeps
+        // number timestamps (they are used in arithmetic further down), but an
+        // NTFS file ID above 2^53-1 is lossy as a double, so matching a recorded
+        // identifier has to come from bigint stats.
+        const candidateIdentity = await fs.lstat(candidatePath, { bigint: true });
+        const candidateDevice = candidateIdentity.dev.toString();
+        const candidateInode = candidateIdentity.ino.toString();
 
         candidateCanonicalPath = await fs.realpath(candidatePath);
         if (!pathIsDirectChild(canonicalRoot, candidateCanonicalPath)) {
@@ -334,8 +341,8 @@ export async function collectManagedWorkspaceInventory(
               record.installationId === input.installationId &&
               record.canonicalRoot === canonicalRoot &&
               record.canonicalPath === candidateCanonicalPath &&
-              record.device === candidateStat.dev &&
-              record.inode === candidateStat.ino
+              record.device === candidateDevice &&
+              record.inode === candidateInode
           );
           managedProvenance = authorityCompleteness.provenance === 'complete' && matches.length === 1;
           if (matches.length > 1) entryErrors.push('workspace provenance is duplicated');

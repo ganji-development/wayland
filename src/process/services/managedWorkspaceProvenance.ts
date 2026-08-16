@@ -12,22 +12,38 @@ import { writeFileAtomic } from '@process/utils/atomicWrite';
 
 export const MANAGED_WORKSPACE_PROVENANCE_FILE = 'managed-workspace-provenance.v1.enc';
 
+/**
+ * Filesystem identifiers are CANONICAL DECIMAL STRINGS, never JSON numbers.
+ *
+ * NTFS hands out 64-bit file IDs that routinely exceed Number.MAX_SAFE_INTEGER
+ * (observed: inode 10414574139085076 against a ceiling of 9007199254740991).
+ * Stored as numbers, such a record was written successfully and then rejected by
+ * its own parser on the next load - a genuine write-then-cannot-read failure that
+ * silently disabled managed-workspace provenance on the affected volume. Beyond
+ * the ceiling the value is also lossy, so an exact identity comparison is not
+ * even meaningful.
+ *
+ * Strings match how the rest of this codebase already records filesystem
+ * identity (constitutionFsTransaction, classicRecoveryLocator,
+ * classicConstitutionPromotion), and they are collected from `{ bigint: true }`
+ * stats so no value passes through a double on the way in.
+ */
 export type ManagedWorkspaceProvenanceRecord = Readonly<{
   schemaVersion: 1;
   workspaceId: string;
   installationId: string;
   canonicalRoot: string;
   canonicalPath: string;
-  device: number;
-  inode: number;
+  device: string;
+  inode: string;
   createdAtMs: number;
 }>;
 
 export type ManagedWorkspaceCreationIdentity = Readonly<{
   canonicalRoot: string;
   canonicalPath: string;
-  device: number;
-  inode: number;
+  device: string;
+  inode: string;
 }>;
 
 type Ledger = Readonly<{
@@ -51,6 +67,24 @@ const DEFAULT_CODEC: ManagedWorkspaceProvenanceCodec = {
 };
 const MAX_LEDGER_BYTES = 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** Canonical decimal, no sign, no leading zeros, no upper bound. */
+const FS_IDENTIFIER_PATTERN = /^(?:0|[1-9]\d*)$/;
+
+/**
+ * Normalize a persisted filesystem identifier, or `null` when it is unusable.
+ *
+ * Accepts the canonical decimal string this module now writes, and - for ledgers
+ * written before that change - a legacy JSON number, but ONLY when it is a safe
+ * integer. A larger legacy number cannot be trusted: it already lost precision
+ * when JSON.parse turned it into a double, so it no longer identifies the object
+ * it claims to. Such a record is rejected rather than silently migrated to a
+ * wrong value.
+ */
+function parseFilesystemIdentifier(value: unknown): string | null {
+  if (typeof value === 'string') return FS_IDENTIFIER_PATTERN.test(value) ? value : null;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return null;
+}
 const queues = new Map<string, Promise<void>>();
 const compareCodeUnits = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
 
@@ -83,16 +117,28 @@ function parseRecord(value: unknown): ManagedWorkspaceProvenanceRecord {
     typeof value.canonicalPath !== 'string' ||
     !path.isAbsolute(value.canonicalPath) ||
     path.dirname(value.canonicalPath) !== value.canonicalRoot ||
-    !Number.isSafeInteger(value.device) ||
-    Number(value.device) < 0 ||
-    !Number.isSafeInteger(value.inode) ||
-    Number(value.inode) < 0 ||
     !Number.isSafeInteger(value.createdAtMs) ||
     Number(value.createdAtMs) < 0
   ) {
     throw new Error('MANAGED_WORKSPACE_PROVENANCE_INVALID_RECORD');
   }
-  return value as ManagedWorkspaceProvenanceRecord;
+  const parsedDevice = parseFilesystemIdentifier(value.device);
+  const parsedInode = parseFilesystemIdentifier(value.inode);
+  if (parsedDevice === null || parsedInode === null) {
+    throw new Error('MANAGED_WORKSPACE_PROVENANCE_INVALID_RECORD');
+  }
+  // Rebuilt rather than cast: a legacy numeric identifier is normalized to its
+  // string form here, so nothing downstream has to know which shape was on disk.
+  return {
+    schemaVersion: 1,
+    workspaceId: value.workspaceId,
+    installationId: value.installationId,
+    canonicalRoot: value.canonicalRoot,
+    canonicalPath: value.canonicalPath,
+    device: parsedDevice,
+    inode: parsedInode,
+    createdAtMs: value.createdAtMs as number,
+  };
 }
 
 function parseLedger(plaintext: string, installationId: string): Ledger {
@@ -182,8 +228,12 @@ export async function recordManagedWorkspaceProvenance(
     .then(async () => {
       const canonicalRoot = await fs.realpath(input.workRoot);
       const canonicalPath = await fs.realpath(input.workspace);
-      const rootStat = await fs.lstat(canonicalRoot);
-      const workspaceStat = await fs.lstat(canonicalPath);
+      // bigint stats: an NTFS file ID above 2^53-1 is lossy as a double, so the
+      // identity comparison below would be comparing rounded values.
+      const rootStat = await fs.lstat(canonicalRoot, { bigint: true });
+      const workspaceStat = await fs.lstat(canonicalPath, { bigint: true });
+      const workspaceDevice = workspaceStat.dev.toString();
+      const workspaceInode = workspaceStat.ino.toString();
       const creationIdentity = input.creationIdentity;
       if (
         rootStat.isSymbolicLink() ||
@@ -194,8 +244,8 @@ export async function recordManagedWorkspaceProvenance(
         !creationIdentity ||
         creationIdentity.canonicalRoot !== canonicalRoot ||
         creationIdentity.canonicalPath !== canonicalPath ||
-        creationIdentity.device !== workspaceStat.dev ||
-        creationIdentity.inode !== workspaceStat.ino ||
+        creationIdentity.device !== workspaceDevice ||
+        creationIdentity.inode !== workspaceInode ||
         !input.installationId
       ) {
         throw new Error('MANAGED_WORKSPACE_PROVENANCE_UNSAFE_TARGET');
@@ -209,7 +259,7 @@ export async function recordManagedWorkspaceProvenance(
       const records = existing?.records ?? [];
       const samePath = records.find((record) => record.canonicalPath === canonicalPath);
       if (samePath) {
-        if (samePath.device !== workspaceStat.dev || samePath.inode !== workspaceStat.ino) {
+        if (samePath.device !== workspaceDevice || samePath.inode !== workspaceInode) {
           throw new Error('MANAGED_WORKSPACE_PROVENANCE_PATH_REUSED');
         }
         recorded = samePath;
@@ -221,8 +271,8 @@ export async function recordManagedWorkspaceProvenance(
         installationId: input.installationId,
         canonicalRoot,
         canonicalPath,
-        device: workspaceStat.dev,
-        inode: workspaceStat.ino,
+        device: workspaceDevice,
+        inode: workspaceInode,
         createdAtMs,
       };
       const ledger: Ledger = {

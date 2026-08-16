@@ -262,7 +262,9 @@ async function createExclusiveManagedWorkspace(
     await fs.mkdir(candidate, { recursive: false, mode: 0o700 });
     const canonicalRoot = await fs.realpath(workRoot);
     const canonicalPath = await fs.realpath(candidate);
-    const candidateStat = await fs.lstat(canonicalPath);
+    // bigint stats: NTFS file IDs exceed Number.MAX_SAFE_INTEGER, and this
+    // identity is compared byte-for-byte against the recorded provenance.
+    const candidateStat = await fs.lstat(canonicalPath, { bigint: true });
     if (
       candidateStat.isSymbolicLink() ||
       !candidateStat.isDirectory() ||
@@ -275,8 +277,8 @@ async function createExclusiveManagedWorkspace(
       creationIdentity: {
         canonicalRoot,
         canonicalPath,
-        device: candidateStat.dev,
-        inode: candidateStat.ino,
+        device: candidateStat.dev.toString(),
+        inode: candidateStat.ino.toString(),
       },
     };
   } catch (error) {

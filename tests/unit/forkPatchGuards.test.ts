@@ -147,7 +147,7 @@ describe('fork patch: Windows code signing stays disabled', () => {
     expect(builderConfig.win, 'electron-builder.yml lost its win section entirely').toBeDefined();
     expect(
       builderConfig.win?.azureSignOptions,
-      'azureSignOptions was reinstated - see FORK-PATCHES.md patch 8'
+      'azureSignOptions was reinstated - see FORK-PATCHES.md patch 9'
     ).toBeUndefined();
   });
 

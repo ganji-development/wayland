@@ -31,9 +31,14 @@ vi.mock('fs/promises', () => ({
     stat: vi.fn(async () => {
       throw new Error('ENOENT');
     }),
-    lstat: vi.fn(async (value: string) => {
+    lstat: vi.fn(async (value: string, options?: { bigint?: boolean }) => {
       if (value.startsWith(`${WORK_ROOT}${path.sep}`)) {
-        return { isSymbolicLink: () => false, isDirectory: () => true, dev: 7, ino: 11 };
+        // Production asks for bigint stats here, because NTFS file IDs exceed
+        // Number.MAX_SAFE_INTEGER and a number-typed identity cannot round-trip
+        // one. Honour the flag so the mock yields the same shape the app sees.
+        return options?.bigint
+          ? { isSymbolicLink: () => false, isDirectory: () => true, dev: BigInt(7), ino: BigInt(11) }
+          : { isSymbolicLink: () => false, isDirectory: () => true, dev: 7, ino: 11 };
       }
       throw new Error('ENOENT');
     }),
@@ -119,8 +124,9 @@ describe('createAcpAgent - preset customAgentId fallback (#66)', () => {
       creationIdentity: {
         canonicalRoot: WORK_ROOT,
         canonicalPath: conv.extra.workspace,
-        device: 7,
-        inode: 11,
+        // Canonical decimal strings, derived from bigint stats.
+        device: '7',
+        inode: '11',
       },
     });
   });

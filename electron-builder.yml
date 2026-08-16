@@ -209,7 +209,7 @@ win:
     - zip
   icon: resources/app.ico # Use the checked-in Windows icon resource for executable metadata/icon patching
   artifactName: ${productName}-${version}-${os}-${arch}.${ext}
-  # FORK PATCH 8 - Windows code signing REMOVED. Do not reinstate on merge.
+  # FORK PATCH 9 - Windows code signing REMOVED. Do not reinstate on merge.
   #
   # Upstream signs here via Azure Trusted Signing against the Ferrox Labs account
   # (publisherName 'Ferrox Labs, LLC', codeSigningAccountName ferrox-labs-signing),
