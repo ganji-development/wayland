@@ -20,6 +20,10 @@ bun run test        # test:vitest && test:bun - the guards below are part of thi
 bun install         # regenerates bun.lock; also re-downloads Electron on a version bump
 ```
 
+The whatsapp-bridge installs **separately** and inherits nothing from the root manifest
+(see patch 5). Watch `bun install` output for `whatsapp-bridge dep install failed (non-fatal)` —
+it does not fail the build, it just leaves WhatsApp broken at runtime.
+
 `tests/unit/forkPatchGuards.test.ts` asserts the patches that would otherwise fail
 **silently**. If it goes red after a merge, a fix was dropped — do not "fix" the test.
 
@@ -106,6 +110,54 @@ Neither was a product defect; both were the harness assuming a POSIX box.
   where antivirus scans every create, vs ~1s on ext4/APFS. Raised to 60s.
 
 Low merge risk.
+
+## 5. yauzl pinned in the whatsapp-bridge — patch 1's second front
+
+**Files:** `src/process/channels/whatsapp-bridge/package.json` (`overrides`), and its `bun.lock`
+**Guard:** `forkPatchGuards.test.ts`
+
+Same root cause as patch 1, reached by a different route, in a package that inherits **nothing**
+from the root manifest. The bridge has its own `package.json`, its own lockfile and its own
+`bun install` (driven by `installBridgeDeps` in `scripts/postinstall.js`), so the root's yauzl pin
+never applied to it:
+
+```
+puppeteer 24.38.0 -> @puppeteer/browsers 2.13.0 -> extract-zip ^2.0.1 -> yauzl 2.10.0
+```
+
+Symptom, observed on two independent Windows machines with different browsers
+(`chrome` on one, `chrome-headless-shell` on the other):
+
+```
+The browser folder (…\chrome\win64-146.0.7680.31) exists but the
+executable (…\chrome-win64\chrome.exe) is missing
+```
+
+The directory holds `ABOUT` and `LICENSE.headless_shell` and nothing else — extraction stalled a
+couple of entries in, exactly as Electron's did.
+
+**This failure is self-perpetuating.** Puppeteer's `DefaultProvider` treats an existing browser
+directory as installed and refuses to re-download, so once a partial extraction lands, every
+retry fails identically. **Pinning yauzl is not enough on a machine that already failed** — the
+poisoned cache must be cleared by hand:
+
+```powershell
+Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\puppeteer\chrome\win64-<version>"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\puppeteer\chrome-headless-shell\win64-<version>"
+cd src\process\channels\whatsapp-bridge; bun install
+```
+
+The bridge's `bun.lock` pins the resolved yauzl, so it must be regenerated for the override to
+take effect — a stale lockfile silently overrides the override.
+
+Note this failure is **non-fatal** to `bun install`: `installBridgeDeps` catches it and logs
+`whatsapp-bridge dep install failed (non-fatal)`. The root install completes and the app builds;
+WhatsApp is simply broken at runtime. Easy to scroll past.
+
+Rejected alternative: `PUPPETEER_SKIP_DOWNLOAD` plus the system Chrome. The bridge passes only
+`{ headless, args }` to `whatsapp-web.js` and sets no `executablePath`, so that moves the failure
+from install time to runtime, and `whatsapp-web.js` is sensitive to Chrome version — a
+system Chrome auto-updates out from under it, while puppeteer's pinned build does not.
 
 ---
 

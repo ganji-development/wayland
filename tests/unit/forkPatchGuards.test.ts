@@ -30,6 +30,22 @@ type PackageManifest = {
 
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as PackageManifest;
 
+/**
+ * The WhatsApp bridge is a separate package with its own package.json, its own
+ * lockfile and its own `bun install`, so it inherits NOTHING from the root
+ * manifest - including the yauzl pin. It reaches the same broken extractor by
+ * its own route: puppeteer -> @puppeteer/browsers -> extract-zip -> yauzl 2.x.
+ */
+const BRIDGE_MANIFEST_PATH = resolve(
+  process.cwd(),
+  'src',
+  'process',
+  'channels',
+  'whatsapp-bridge',
+  'package.json'
+);
+const bridgeManifest = JSON.parse(readFileSync(BRIDGE_MANIFEST_PATH, 'utf8')) as PackageManifest;
+
 /** Lowest major version a range can resolve to, e.g. `^3.4.0` -> 3. */
 function lowestMajor(range: string): number {
   const match = /(\d+)/.exec(range);
@@ -59,6 +75,19 @@ describe('fork patch: yauzl is pinned above the version that cannot inflate', ()
 
   it('keeps both blocks in agreement so bun and npm resolve the same yauzl', () => {
     expect(manifest.overrides?.yauzl).toBe(manifest.resolutions?.yauzl);
+  });
+
+  it('pins yauzl in the whatsapp-bridge too, which installs separately', () => {
+    // The bridge reaches the same broken extractor by its own route:
+    // puppeteer -> @puppeteer/browsers -> extract-zip -> yauzl 2.x. Its
+    // extraction stalls a few entries in, leaving a browser directory holding
+    // ABOUT and LICENSE and no executable - and puppeteer's DefaultProvider then
+    // treats that directory as installed and refuses to re-download, so the
+    // failure is permanent until the cache is cleared by hand.
+    const range = bridgeManifest.overrides?.yauzl;
+
+    expect(range, 'the whatsapp-bridge yauzl pin was dropped - see FORK-PATCHES.md').toBeTruthy();
+    expect(lowestMajor(range as string), `yauzl range "${range}" allows a 2.x resolution`).toBeGreaterThanOrEqual(3);
   });
 });
 
