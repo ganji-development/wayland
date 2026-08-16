@@ -156,18 +156,26 @@ describe('Desktop recovery mutation epoch', () => {
     const config = path.join(root, 'oversize-config');
     fs.mkdirSync(userDataRoot);
     fs.mkdirSync(config);
-    for (let index = 0; index < 20_001; index += 1) {
-      fs.writeFileSync(path.join(config, `${index.toString().padStart(5, '0')}.json`), '{}');
+    // Writing 20,001 files is SETUP, not the thing under test, and on NTFS it is
+    // the whole cost: antivirus scans every create, so sequential writeFileSync
+    // ran ~12s standalone and blew a 60s budget inside the full suite, where it
+    // competes for I/O with every other file running in parallel. Issuing the
+    // writes in overlapping batches keeps the disk queue busy instead of paying
+    // one scan round-trip per file, which is what made it load-sensitive.
+    const BATCH = 512;
+    const names = Array.from({ length: 20_001 }, (_, index) => `${index.toString().padStart(5, '0')}.json`);
+    for (let start = 0; start < names.length; start += BATCH) {
+      await Promise.all(
+        names.slice(start, start + BATCH).map((name) => fs.promises.writeFile(path.join(config, name), '{}'))
+      );
     }
     const value = inventory(config);
     value.userDataRoot = userDataRoot;
 
     await expect(fingerprintDesktopRecoveryState(value)).rejects.toThrow('bounded content inventory');
-    // Budget covers the SETUP, not the assertion: laying down 20,001 files costs
-    // ~12s on NTFS (antivirus scans each create) against ~1s on ext4/APFS, so the
-    // original 30s left no headroom on Windows and the test timed out before it
-    // ever reached the bound it exists to prove.
-  }, 60_000);
+    // Headroom on top of the faster setup: the budget still has to cover a fully
+    // loaded parallel suite on a machine whose scanner is in the write path.
+  }, 120_000);
 });
 
 describe('Desktop-only production capture boundary', () => {
