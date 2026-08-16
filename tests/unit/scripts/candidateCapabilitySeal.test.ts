@@ -248,7 +248,19 @@ describe('candidate capability seal', () => {
     const input = fixture();
     delete (input as { receiptsDir?: string }).receiptsDir;
 
-    expect(() => createCapabilitySeal(input)).toThrow(/WAYLAND_CAPABILITY_RECEIPTS_DIR is required/);
+    // createCapabilitySeal falls back to WAYLAND_CAPABILITY_RECEIPTS_DIR when no
+    // receiptsDir is passed, so this case cannot be asserted while the variable
+    // is set in the ambient shell - and it IS set in any shell that has run a
+    // packaged build, where the seal then failed on a stale candidate instead of
+    // the missing-authority guard under test. A test for unconfigured behaviour
+    // has to own the configuration.
+    const ambient = process.env.WAYLAND_CAPABILITY_RECEIPTS_DIR;
+    delete process.env.WAYLAND_CAPABILITY_RECEIPTS_DIR;
+    try {
+      expect(() => createCapabilitySeal(input)).toThrow(/WAYLAND_CAPABILITY_RECEIPTS_DIR is required/);
+    } finally {
+      if (ambient !== undefined) process.env.WAYLAND_CAPABILITY_RECEIPTS_DIR = ambient;
+    }
   });
 
   it('seals the exact candidate only when every required receipt is accepted', () => {
