@@ -282,6 +282,11 @@ git update-ref refs/recovery/historical-corpus-producer 991c502e74506ec3702f92e4
 Survives merges (it is a ref, not a file). **Does not survive a re-clone**, and is not pushed —
 re-run both commands after cloning fresh.
 
+The two git-backed assertions in `verifyHistoricalTransactionCorpus.test.ts` are gated on this
+commit being present (`it.skipIf`), so a fresh clone reports them as **skipped** rather than
+failing on a precondition it cannot satisfy. Run the two commands above to make them execute —
+that is the only way those two cases verify anything at all.
+
 ---
 
 ## Known-unfixed upstream defect

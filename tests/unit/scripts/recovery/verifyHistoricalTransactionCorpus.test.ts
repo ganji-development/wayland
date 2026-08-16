@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -20,6 +21,34 @@ const {
   runHistoricalTransactionCorpusVerification,
   sha256Prefixed,
 } = harness;
+
+/**
+ * Is the pinned producer commit actually reachable in THIS clone?
+ *
+ * It is not reachable from `main`, so a fresh clone does not have it. The
+ * harness treats that as "cannot derive" and skips the check silently
+ * (`gitBlobSha256` returns null and the caller guards on `derived &&`), which
+ * makes the two git-backed cases below meaningless rather than failing: the
+ * positive one passes while verifying nothing, and the negative one cannot throw.
+ *
+ * Gate them on the precondition instead of pretending it holds. To make them run,
+ * fetch and pin the commit so `git gc` cannot prune it:
+ *
+ *   git fetch upstream 991c502e74506ec3702f92e429a8b31b655412ba
+ *   git update-ref refs/recovery/historical-corpus-producer 991c502e74506ec3702f92e429a8b31b655412ba
+ *
+ * See FORK-PATCHES.md. Every non-git assertion in this file runs unconditionally.
+ */
+function producerCommitIsPresent(): boolean {
+  try {
+    execFileSync('git', ['-C', REPO_ROOT, 'cat-file', '-e', `${PRODUCER_COMMIT}^{commit}`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const PRODUCER_PRESENT = producerCommitIsPresent();
 
 type CorpusProvider = {
   list: () => string[];
@@ -102,8 +131,9 @@ describe('historical transaction corpus verifier', () => {
     });
   });
 
-  it('re-derives the exact producer source blob through git', () => {
-    // git is available in the worktree; the source blob digest must match.
+  it.skipIf(!PRODUCER_PRESENT)('re-derives the exact producer source blob through git', () => {
+    // Only meaningful when the producer commit is in this clone; otherwise the
+    // harness cannot derive the blob and this passes without verifying anything.
     expect(() => verifyProvenance(manifest, { provider: memoryProvider(), git: true })).not.toThrow();
   });
 
@@ -149,10 +179,12 @@ describe('historical transaction corpus verifier', () => {
     );
   });
 
-  it('rejects a source blob digest that does not match the producer commit', () => {
+  it.skipIf(!PRODUCER_PRESENT)('rejects a source blob digest that does not match the producer commit', () => {
     const candidate = clone(manifest);
     candidate.source.contentSha256 = `sha256:${'0'.repeat(64)}`;
-    // git:true re-derives the real blob and detects the substitution.
+    // git:true re-derives the real blob and detects the substitution. Without the
+    // producer commit locally there is nothing to re-derive FROM, so the harness
+    // skips the comparison and this can never throw - hence the precondition gate.
     expect(() => verifyProvenance(candidate, { provider: memoryProvider(), git: true })).toThrow(/reconstruction/);
   });
 
