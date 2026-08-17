@@ -21,12 +21,17 @@ import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { requireBash } from '../../helpers/resolveBash';
 
 const VERSION = '1.0.0';
 const roots: string[] = [];
 
 function run(script: string, args: string[]) {
-  return spawnSync('bash', [script, ...args], { cwd: process.cwd(), encoding: 'utf8' });
+  // Resolved, not bare: a stock Windows PowerShell session has no `bash` on
+  // PATH even with Git for Windows installed, so a bare spawn fails ENOENT and
+  // returns `status: null` - reported here as "expected null to be 0", which
+  // reads as every release script failing rather than as a missing interpreter.
+  return spawnSync(requireBash(), [script, ...args], { cwd: process.cwd(), encoding: 'utf8' });
 }
 
 /** Build a complete release-assets directory through the real release scripts. */

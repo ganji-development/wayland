@@ -116,18 +116,35 @@ Two details a conflict resolution must not lose:
 
 ## 4. Windows test-harness fixes
 
-**Files:** `tests/unit/scripts/prepareReleaseAssets.test.ts`, `tests/unit/process/services/recovery/recoveryCapture.test.ts`
-**Commit:** `b6f31628`
+**Files:** `tests/helpers/resolveBash.ts` (ours), `tests/unit/scripts/prepareReleaseAssets.test.ts`,
+`tests/unit/scripts/verifyReleaseAssets.test.ts`, `tests/unit/process/services/recovery/recoveryCapture.test.ts`
 
 Neither was a product defect; both were the harness assuming a POSIX box.
 
-- `spawnSync('bash', …)` — a stock Windows PowerShell session has no `bash` on PATH even with
-  Git for Windows installed, so it failed ENOENT and returned `status: null`, surfacing as
-  `expected null to be 0`. Now probes PATH, then the Git for Windows locations.
-- `recoveryCapture` budgeted 30s for a test whose *setup* writes 20,001 files: ~12s on NTFS
-  where antivirus scans every create, vs ~1s on ext4/APFS. Raised to 60s.
+**`bash` is not on PATH.** A stock Windows PowerShell session has none even with Git for Windows
+installed, so `spawnSync('bash', …)` fails ENOENT and returns `status: null` — reported as
+`expected null to be 0`, which reads as every release script failing rather than as a missing
+interpreter. `tests/helpers/resolveBash.ts` probes PATH first, then the Git for Windows
+locations, and `requireBash()` throws a plain message when there is genuinely none.
 
-Low merge risk.
+**This one recurs on every upstream merge.** Upstream keeps adding suites that shell out this
+way — the `v0.9.9` merge brought `verifyReleaseAssets.test.ts`, which failed **28 tests** on
+exactly this. The helper exists so the next one is a two-line change:
+
+```ts
+import { requireBash } from '../../helpers/resolveBash';
+spawnSync(requireBash(), [script, ...args], { cwd: process.cwd(), encoding: 'utf8' });
+```
+
+If a merge brings a new suite failing with `expected null to be 0` from a shell script, this is
+why. Grep the incoming diff for `spawnSync('bash'`.
+
+**`recoveryCapture` budget.** Its *setup* writes 20,001 files: ~12s on NTFS where antivirus scans
+every create, vs ~1s on ext4/APFS. Writes are issued in overlapping batches of 512 so the disk
+queue stays busy, with 120s of headroom. Note this test is also the first to fall over when the
+host itself is loaded — a timeout here is as likely to be the machine as the budget.
+
+Low merge risk on the files themselves; high recurrence rate on the *pattern*.
 
 ## 5. yauzl pinned in the whatsapp-bridge — patch 1's second front
 
