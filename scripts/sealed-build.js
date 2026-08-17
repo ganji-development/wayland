@@ -107,7 +107,19 @@ function main() {
     cwd: REPO_ROOT,
     stdio: 'inherit',
     shell: process.platform === 'win32',
-    env: { ...process.env, WAYLAND_CAPABILITY_RECEIPTS_DIR: out },
+    env: {
+      ...process.env,
+      WAYLAND_CAPABILITY_RECEIPTS_DIR: out,
+      // #940: the apple / imap / news / cal.com connectors build from the
+      // sibling `waylandmcp` repo, which has no GitHub remote yet - it cannot be
+      // checked out by anyone, us included. build-mcp-servers.js FAILS the build
+      // when a connector is missing, so every upstream workflow sets this same
+      // opt-out (build-and-release, build-matrix, build-manual, pr-checks,
+      // publish-npm, _build-reusable). Upstream's own releases ship without
+      // those four. Respect an explicit value so it can still be forced off.
+      // DELETE this the moment waylandmcp becomes checkout-able.
+      WAYLAND_ALLOW_MISSING_MCP: process.env.WAYLAND_ALLOW_MISSING_MCP ?? '1',
+    },
   });
   if (result.error) throw result.error;
   return result.status ?? 1;

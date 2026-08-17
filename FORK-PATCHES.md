@@ -306,6 +306,15 @@ passthrough, because the value reaches a child process launcher.
 
 Note it shells out to `bun run <target>`, so the `predist:*` hooks still run.
 
+It also sets **`WAYLAND_ALLOW_MISSING_MCP=1`** on the child. Since #940, `build-mcp-servers.js`
+fails the build when the apple / imap / news / cal.com connectors cannot be bundled, and those
+build from a sibling `waylandmcp` repo that **has no GitHub remote yet** — confirmed by
+`git ls-remote` against both `FerroxLabs/waylandmcp` and our org. Nobody can check it out,
+which is why all six upstream workflows set the identical opt-out and why upstream's own
+releases ship without those four connectors. An explicit value in the environment still wins, so
+it can be forced off. Delete it the moment that repo becomes checkout-able — that is the whole
+point of the gate.
+
 ## 8. Managed-workspace provenance stores filesystem identity as strings
 
 **Files:** `src/process/services/managedWorkspaceProvenance.ts`,
