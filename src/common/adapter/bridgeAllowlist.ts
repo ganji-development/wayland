@@ -66,16 +66,106 @@ const CONTROL_ALLOWED: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Wrap `bridge.buildProvider` so every declared provider key is recorded.
+ * Thrown by a bridge `invoke()` when the call cannot reach its provider on the
+ * transport this renderer is using (#979).
  *
- * Returned object is identical in shape and behavior to the platform's
- * `buildProvider` - this is a pure side-effect wrapper.
+ * The platform's `invoke()` is RESOLVE-ONLY: it settles a call only when
+ * `subscribe.callback-<key><id>` arrives, and there is no reject path and no
+ * timeout in the wire protocol. The WS dispatcher therefore answers a
+ * remote-denied call with an error ENVELOPE (`settleRejectedInvoke`,
+ * src/process/webserver/adapter.ts) so the caller settles instead of hanging -
+ * which means the renderer receives a NON-NULL object where it expected data,
+ * every `?? []` / `?? default` is skipped, and the next `.find()` / `.slice()`
+ * throws in render phase and blanks the app via the root ErrorBoundary.
+ *
+ * This error restores the missing failure channel on the client side: a call
+ * that cannot succeed rejects, so `catch` / SWR `error` / `?? default` all work
+ * the way the call sites already assume.
+ */
+export class BridgeUnavailableError extends Error {
+  /** Provider key (the part after the `subscribe-` wire prefix). */
+  readonly key: string;
+  /** Why the call cannot reach a provider (`remote-forbidden` / `not-allowed`). */
+  readonly reason: string;
+
+  constructor(key: string, reason: string) {
+    super(`Bridge method "${key}" is not available on this transport (${reason})`);
+    this.name = 'BridgeUnavailableError';
+    this.key = key;
+    this.reason = reason;
+  }
+}
+
+/**
+ * True iff this JS context is a renderer talking to main over the REMOTE
+ * WebSocket transport (browser WebUI / paired device / standalone Docker).
+ *
+ * Reuses the signal the app already uses everywhere else for this question -
+ * the presence of the preload-injected `window.electronAPI` (see
+ * `isElectronDesktop()` in src/renderer/utils/platform.ts, and the transport
+ * branch in src/common/adapter/browser.ts which opens the WebSocket precisely
+ * when that object is absent). The main process has no `window`, so it is never
+ * classified as remote; this is deliberately evaluated per call rather than
+ * memoized at module load, because preload injection races module evaluation.
+ *
+ * This is a CLIENT-side convenience gate only. It is not a security control and
+ * removes none: the authority is still `isAllowedForRemote` on the server's WS
+ * dispatch path, which is what this function's key check consults.
+ */
+export function isRemoteBridgeTransport(): boolean {
+  return typeof window !== 'undefined' && !(window as { electronAPI?: unknown }).electronAPI;
+}
+
+/** `detail` values `settleRejectedInvoke` uses when it refuses a call. */
+const REJECTION_ENVELOPE_DETAILS: ReadonlySet<string> = new Set(['remote-forbidden', 'not-allowed']);
+
+/**
+ * True iff `value` is exactly the refusal envelope `settleRejectedInvoke`
+ * sends: `{ error: 'failed', detail: <refusal reason> }` and nothing else.
+ *
+ * The shape check is deliberately exact. Real providers do return payloads that
+ * carry `error: 'failed'` (e.g. `project.generate-knowledge-draft` answers
+ * `{ draft: '', error: 'failed', detail: <server message> }`), and those are
+ * legitimate resolved values that must NOT be turned into rejections.
+ */
+function isRefusalEnvelope(value: unknown): value is { error: 'failed'; detail: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.error !== 'failed') return false;
+  if (typeof record.detail !== 'string' || !REJECTION_ENVELOPE_DETAILS.has(record.detail)) return false;
+  return Object.keys(record).length === 2;
+}
+
+/**
+ * Wrap `bridge.buildProvider` so every declared provider key is recorded, and
+ * so a call that the remote transport cannot serve REJECTS instead of resolving
+ * with the refusal envelope (#979).
+ *
+ * `provider` is passed through untouched; only `invoke` is wrapped, and only on
+ * the remote transport. On the local Electron renderer and in the main process
+ * this is the same pure side-effect wrapper it has always been.
  */
 export function buildProvider<Data, Params = undefined>(
   key: string
 ): ReturnType<typeof bridge.buildProvider<Data, Params>> {
   providerKeys.add(key);
-  return bridge.buildProvider<Data, Params>(key);
+  const base = bridge.buildProvider<Data, Params>(key);
+  const baseInvoke = base.invoke as (params?: Params) => Promise<Data>;
+
+  const invoke = async (params?: Params): Promise<Data> => {
+    if (!isRemoteBridgeTransport()) return baseInvoke(params);
+    // Fail fast on a key the server's WS dispatcher will refuse anyway. Reading
+    // the SAME predicate the dispatcher applies is what makes drift structurally
+    // impossible - there is no second copy of the denylist.
+    if (isRemoteDeniedProviderKey(key)) throw new BridgeUnavailableError(key, 'remote-forbidden');
+    const result = await baseInvoke(params);
+    // Defence in depth: a refusal can still arrive for a key this side did not
+    // classify as denied (e.g. the value-level config-write gate). Convert it.
+    if (isRefusalEnvelope(result)) throw new BridgeUnavailableError(key, result.detail);
+    return result;
+  };
+
+  return { provider: base.provider, invoke: invoke as typeof base.invoke };
 }
 
 /**
@@ -231,8 +321,15 @@ const REMOTE_DENIED_KEYS: ReadonlySet<string> = new Set([
   'wcoreToolKeys.delete',
   // --- Wayland Core engine config.toml mutation (rewrite tool allow-list /
   //     sandbox policy / env passthrough). A remote caller reaching this could
-  //     disable the sandbox or force-allow secrets into bash (SEC-6). ---
-  'wcoreConfig.setSection',
+  //     disable the sandbox or force-allow secrets into bash (SEC-6).
+  //
+  //     #987: a `wcoreConfig.setSection` entry used to head this group. No such
+  //     provider is registered — `setSection()` is a MAIN-process helper in
+  //     src/process/agent/wcore/configBridge.ts that the typed providers below
+  //     call; it never crosses the wire. Matching here is exact, so the entry
+  //     could never fire: it was protection that protected nothing, the same
+  //     failure the agent-installer note further down warns about. The real
+  //     wire surface is the typed setters, all of which are denied. ---
   'wcoreConfig.patchField',
   'wcoreConfig.setBrowserPolicy',
   'wcoreConfig.setRawEngineMode',
@@ -244,6 +341,20 @@ const REMOTE_DENIED_KEYS: ReadonlySet<string> = new Set([
   'wcoreConfig.getBrowserPolicy',
   // Exact runtime config identity includes absolute local filesystem paths.
   'wcoreConfig.getEffectiveRuntime',
+  //     #990: `wcoreConfig.getOutputBudget` is the one member of this namespace
+  //     that is deliberately NOT denied, and the gap is design rather than drift.
+  //     It was carved out in the same commit that denied every sibling (#925),
+  //     and `bridgeAllowlist.redteam.test.ts` has asserted the split ever since
+  //     ("keeps output-budget reads remote but denies the mutation"). The reason
+  //     the reads above are denied does not apply to it: its whole payload is
+  //     `{ mode: 'auto' | 'fixed'; value?: number }` - a token cap, with no
+  //     secret, no local path, and nothing about the sandbox or tool posture.
+  //     `setOutputBudget` above is the half that matters and stays denied, as
+  //     does the `wcore.outputBudget` config-storage side door further down.
+  //     Recorded here because an unexplained gap in an otherwise-uniform group
+  //     gets re-raised every time someone reads the file; the sync test in
+  //     `bridgeAllowlistWcoreConfig.redteam.test.ts` now pins the whole namespace
+  //     so a FUTURE sibling cannot inherit this carve-out by omission.
   // Profile metadata includes local names and filesystem paths. Remote has no
   // redacted DTO or authority contract, so fail closed.
   'wcoreProfiles.list',
@@ -262,7 +373,7 @@ const REMOTE_DENIED_KEYS: ReadonlySet<string> = new Set([
   //     would spawn a Force/AutoEdit-mode agent with NO local user action. There
   //     is no per-call remote/local signal inside a buildProvider handler (remote
   //     enforcement is name-based here), so mode cannot be clamped in-handler;
-  //     deny the write/exec surface outright, mirroring `wcoreConfig.setSection`.
+  //     deny the write/exec surface outright, mirroring `wcoreConfig.patchField`.
   //     add-job/update-job set the mode; run-now fires the agent (exec);
   //     save-skill writes the job's SKILL.md verbatim (validated only for YAML
   //     frontmatter shape, NOT instruction content), so a remote caller could
@@ -506,12 +617,25 @@ export function isAllowedForRemote(name: string): boolean {
   // heartbeat) is already constrained by isAllowedInboundName.
   if (!name.startsWith('subscribe-')) return true;
 
-  const key = name.slice('subscribe-'.length);
-  if (REMOTE_DENIED_KEYS.has(key)) return false;
+  return !isRemoteDeniedProviderKey(name.slice('subscribe-'.length));
+}
+
+/**
+ * Key-level half of {@link isAllowedForRemote}: true iff the provider key (the
+ * part after the `subscribe-` wire prefix) is denied to REMOTE callers.
+ *
+ * Exists so the bridge CLIENT (`buildProvider`, #979) can ask the same question
+ * the server's dispatcher asks, against the same two collections. Nothing about
+ * the denylist changes here - `isAllowedForRemote` is the identical function it
+ * was, expressed in terms of this predicate.
+ */
+export function isRemoteDeniedProviderKey(key: string): boolean {
+  if (typeof key !== 'string' || key.length === 0) return false;
+  if (REMOTE_DENIED_KEYS.has(key)) return true;
   for (const prefix of REMOTE_DENIED_PREFIXES) {
-    if (key.startsWith(prefix)) return false;
+    if (key.startsWith(prefix)) return true;
   }
-  return true;
+  return false;
 }
 
 /**
@@ -547,9 +671,10 @@ const REMOTE_DENIED_CONFIG_KEY_PREFIXES: readonly string[] = [
   'webui.desktop.',
   'workspace.trustLevel',
   'wcore.rawEngineMode',
-  // Output-budget writes must use the dedicated transactional provider. A
-  // remote peer may use that typed path, but must not bypass its validation,
-  // serialization, and explicit failure result through generic storage.
+  // Output-budget writes must use the dedicated transactional provider, and that
+  // provider (`wcoreConfig.setOutputBudget`) is itself remote-denied. Guard the
+  // persisted key so the generic storage setter cannot become the side door the
+  // typed path closed. The matching READ stays remote-reachable by design (#990).
   'wcore.outputBudget',
 ];
 
@@ -580,25 +705,35 @@ export function isRemoteDeniedConfigWrite(name: string, data: unknown): boolean 
 }
 
 /**
- * Emitter/broadcast (main -> client) names that must NOT be forwarded to a
- * remote WebSocket peer. Inbound denial (isAllowedForRemote) stops a peer
+ * True iff an emitter `name` (main -> client) may be broadcast to a remote
+ * WebSocket peer. Inbound denial ({@link isAllowedForRemote}) stops a peer
  * INVOKING a provider; this stops a peer passively RECEIVING an emitter stream.
  *
- * #645: terminal.output / terminal.exit carry the live PTY stream (command
- * output, file contents, whatever the agent CLI prints). The terminal is
- * local-only, so a paired peer must never receive it even though it can never
- * spawn/drive one. The local Electron renderer is unaffected — it receives
- * emitters over the in-process IPC adapter, not this WS broadcast path.
+ * #987: this used to be a SECOND hand-maintained prefix list (`['terminal.']`),
+ * and a second hand-maintained list is exactly how it drifted. The inbound rule
+ * grew a `cost.` deny — the whole namespace, because those methods disclose
+ * spend — and the outbound rule did not, so `cost.budgetAlert` and
+ * `cost.budgetGateBlocked` were still broadcast to every paired device.
+ * budgetGateBlocked carries the HELD USER MESSAGE BODY (`content`, plus the
+ * attached file paths), not just a number.
+ *
+ * The fix is structural rather than one more entry: the outbound rule is now
+ * DERIVED from the inbound one, which is the single source of truth. The
+ * invariant is that a namespace a paired peer may not INVOKE is a namespace it
+ * may not RECEIVE either, so any future addition to REMOTE_DENIED_PREFIXES /
+ * REMOTE_DENIED_KEYS is denied in both directions by construction and the two
+ * rules cannot drift apart again.
+ *
+ * #645 (terminal.output / terminal.exit, the live PTY stream) is preserved by
+ * the derived `terminal.` namespace. The local Electron renderer is unaffected
+ * — it receives emitters over the in-process IPC adapter, not this WS broadcast
+ * path.
  */
-const REMOTE_OUTBOUND_DENIED_PREFIXES: readonly string[] = ['terminal.'];
-
-/** True iff an emitter `name` may be broadcast to remote WS peers. */
 export function isAllowedOutboundToRemote(name: string): boolean {
   if (typeof name !== 'string' || name.length === 0) return false;
-  for (const prefix of REMOTE_OUTBOUND_DENIED_PREFIXES) {
-    if (name.startsWith(prefix)) return false;
-  }
-  return true;
+  // Emitter names carry no `subscribe-` transport prefix, so re-add it and
+  // reuse the inbound predicate verbatim instead of re-implementing the match.
+  return isAllowedForRemote(`subscribe-${name}`);
 }
 
 /**

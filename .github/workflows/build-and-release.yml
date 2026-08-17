@@ -11,6 +11,13 @@ on:
 
 env:
   BUN_INSTALL_REGISTRY: 'https://registry.npmjs.org/'
+  # #940: four @wayland MCP connectors (apple, imap, news, cal.com) build from
+  # the sibling waylandmcp repo, which has no GitHub remote yet - CI cannot
+  # check it out. scripts/build-mcp-servers.js now FAILS the build when a
+  # connector cannot be bundled, so CI must opt out explicitly until that repo
+  # lands. DELETE this line the moment waylandmcp is checkout-able in CI; that
+  # is the whole point of the gate.
+  WAYLAND_ALLOW_MISSING_MCP: '1'
 
 jobs:
   build-pipeline:
@@ -243,6 +250,17 @@ jobs:
       - name: Prepare release assets (normalize updater metadata)
         shell: bash
         run: bash scripts/prepare-release-assets.sh build-artifacts release-assets
+
+      # #989: assert the COMPLETE expected artifact set before anything is
+      # published. verify-release-assets.sh previously ran only against the CI
+      # mock fixture in pr-checks.yml, so it never saw a real release - which is
+      # why #941 (the Windows portable zip dropped by a bad upload glob) reached
+      # users unnoticed for several releases. Running it here, on the real
+      # normalized assets, is what makes it an actual gate: a missing artifact
+      # class now fails the job before the draft release is created.
+      - name: Verify release assets (complete expected set)
+        shell: bash
+        run: bash scripts/verify-release-assets.sh release-assets
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
