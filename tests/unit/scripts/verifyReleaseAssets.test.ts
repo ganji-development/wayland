@@ -16,8 +16,8 @@
  * defect, so the negative cases are the point of this file.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { cpSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -34,10 +34,27 @@ function run(script: string, args: string[]) {
   return spawnSync(requireBash(), [script, ...args], { cwd: process.cwd(), encoding: 'utf8' });
 }
 
-/** Build a complete release-assets directory through the real release scripts. */
-function preparedAssets(): string {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'wayland-verify-assets-'));
-  roots.push(root);
+/**
+ * A complete release-assets directory, built ONCE through the real scripts.
+ *
+ * Every case needs the same 26-artifact set and then removes one file from it.
+ * Rebuilding it per case cost ~4.9s of shell work each time on Windows
+ * (create-mock 1.7s + prepare 3.2s, measured), which against a 10s per-test
+ * budget made the whole file a timeout generator - the pipeline is genuinely
+ * that slow when every process spawn goes through Git Bash.
+ *
+ * Built lazily so the cost lands on the first case rather than on import.
+ */
+let template: string | null = null;
+/** Held apart from `roots`: afterEach clears that list, and the template has to
+ *  outlive every case. Removed once in afterAll. */
+let templateRoot: string | null = null;
+
+function templateAssets(): string {
+  if (template) return template;
+
+  const root = mkdtempSync(path.join(os.tmpdir(), 'wayland-verify-assets-template-'));
+  templateRoot = root;
   const input = path.join(root, 'build-artifacts');
   const output = path.join(root, 'release-assets');
 
@@ -47,6 +64,23 @@ function preparedAssets(): string {
   const prepared = run('scripts/prepare-release-assets.sh', [input, output]);
   expect(prepared.status, `${prepared.stdout}\n${prepared.stderr}`).toBe(0);
 
+  template = output;
+  return template;
+}
+
+/**
+ * A private, complete copy of that set for one case to mutate.
+ *
+ * Copying ~26 small files is far cheaper than re-running two shell scripts, and
+ * each case still gets its own directory - so deleting an artifact in one case
+ * cannot leak into another.
+ */
+function preparedAssets(): string {
+  const source = templateAssets();
+  const root = mkdtempSync(path.join(os.tmpdir(), 'wayland-verify-assets-'));
+  roots.push(root);
+  const output = path.join(root, 'release-assets');
+  cpSync(source, output, { recursive: true });
   return output;
 }
 
@@ -93,6 +127,12 @@ const EXPECTED_METADATA = [
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  if (templateRoot) rmSync(templateRoot, { recursive: true, force: true });
+  templateRoot = null;
+  template = null;
 });
 
 describe('verify-release-assets expected-set completeness', () => {

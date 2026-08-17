@@ -121,11 +121,22 @@ Two details a conflict resolution must not lose:
 
 Neither was a product defect; both were the harness assuming a POSIX box.
 
-**`bash` is not on PATH.** A stock Windows PowerShell session has none even with Git for Windows
-installed, so `spawnSync('bash', …)` fails ENOENT and returns `status: null` — reported as
-`expected null to be 0`, which reads as every release script failing rather than as a missing
-interpreter. `tests/helpers/resolveBash.ts` probes PATH first, then the Git for Windows
-locations, and `requireBash()` throws a plain message when there is genuinely none.
+**`bash` is not on PATH — or worse, the wrong one is.** Two distinct failures, same helper:
+
+| symptom | cause |
+|---|---|
+| `status: null`, "expected null to be 0" | no `bash` at all; `spawnSync` fails ENOENT |
+| exit **127**, "No such file or directory" | **WSL's bash** answered — it ignores the Windows `cwd` and starts in `/root` |
+
+The second is the nastier one. `C:\Windows\System32\bash.exe` lands on PATH the moment the WSL
+optional feature is enabled, and it passes a naive `bash -c 'exit 0'` probe with a cheerful 0
+before failing to see a single repo file. It made 31 tests report the release scripts as missing
+on a machine where they were present and executable — and it appeared *mid-session*, so the same
+commit passed at 07:14 and failed at 08:11 with no code change.
+
+`tests/helpers/resolveBash.ts` therefore probes **capability, not existence**: each candidate must
+run `test -f package.json` against the real cwd. Git for Windows is tried first on Windows, PATH
+last, because a Windows PATH `bash` is as likely to be WSL as not.
 
 **This one recurs on every upstream merge.** Upstream keeps adding suites that shell out this
 way — the `v0.9.9` merge brought `verifyReleaseAssets.test.ts`, which failed **28 tests** on
@@ -136,8 +147,22 @@ import { requireBash } from '../../helpers/resolveBash';
 spawnSync(requireBash(), [script, ...args], { cwd: process.cwd(), encoding: 'utf8' });
 ```
 
-If a merge brings a new suite failing with `expected null to be 0` from a shell script, this is
-why. Grep the incoming diff for `spawnSync('bash'`.
+If a merge brings a new suite failing with `expected null to be 0` **or exit 127** from a shell
+script, this is why. Grep the incoming diff for `spawnSync('bash'`.
+
+**`verifyReleaseAssets` also rebuilt its fixture per case.** `preparedAssets()` reran
+`create-mock` + `prepare` for all 27 cases to produce an identical 26-artifact set, at 4.9s of
+Git Bash work each — against a 10s per-test budget, which made the file a timeout generator on
+its own. It now builds the set once and copies it per case:
+
+| | before | after |
+|---|---|---|
+| per case | 6,042 ms | **646 ms** |
+| file total | ~163 s | ~5 s + 27 verifies |
+
+Each case still gets a private directory, so deleting an artifact in one cannot leak into
+another. The template is held outside `roots` because `afterEach` clears that list; it is removed
+in `afterAll`.
 
 **`recoveryCapture` budget.** Its *setup* writes 20,001 files: ~12s on NTFS where antivirus scans
 every create, vs ~1s on ext4/APFS. Writes are issued in overlapping batches of 512 so the disk
